@@ -370,6 +370,14 @@ void tile_draw_gamepad(gfx_pixslice *slice)
 	}
 }
 
+void tile_draw_build(gfx_pixslice *slice)
+{
+	char *buildString = "ZenPirate Build";
+	for (int i = 0; buildString[i] != 0; i++) {
+		text_draw_char16(slice, buildString[i], i, 0, 0x0000);
+	}
+}
+
 void tile_animate(void)
 {
 #if 0
@@ -550,6 +558,7 @@ static void tile_render_slice(gfx_pixslice *slice)
 	if(slice->y == 0) {
 		tile_draw_fps(slice);
 		tile_draw_gamepad(slice);
+		tile_draw_build(slice);
 	}
 
 	gpio_clear(GPIOA, GPIO3);

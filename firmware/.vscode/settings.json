@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "munch_app.h": "c",
+        "audio_app.h": "c"
+    }
+}
