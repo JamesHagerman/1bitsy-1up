@@ -42,6 +42,7 @@
 #include "tile_app.h"
 #include "audio_app.h"
 #include "fblocks_app.h"
+#include "tracker_app.h"
 
 #define MY_CLOCK (rcc_hse_25mhz_3v3[RCC_CLOCK_3V3_168MHZ])
 #define BG_COLOR 0x0000         // black
@@ -53,6 +54,7 @@ enum app_ids {
     tile_app,
     audio_app,
     fblocks_app,
+    tracker_app,
     end_app
 } active_app = munch_app;
 
@@ -89,6 +91,12 @@ struct app {
 		.render = fblocks_render,
                 .end = NULL,
 	},
+        [tracker_app] = {
+                .init = tracker_init,
+                .animate = tracker_animate,
+                .render = tracker_render,
+                .end = tracker_end,
+        },
 };
 
 static void handle_systick(uint32_t millis)
