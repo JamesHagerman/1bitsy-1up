@@ -28,7 +28,9 @@
 
 gfx_rgb565 munch_base_color;
 
-uint16_t munch_magic = 27;               // try different values
+// uint16_t munch_magic = 27;         // try different values
+uint16_t munch_magic = 20 << 11 | 27; // This is more colorful.
+
 
 void munch_init(void)
 {
@@ -38,16 +40,16 @@ void munch_init(void)
 void munch_animate(void)
 {
     /* We want to change the magic number on every color overflow. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-overflow"
-    if (munch_base_color > (munch_base_color + 0x0021)) {
-#pragma GCC diagnostic pop
-        munch_magic+=10;
-        if (munch_magic > 100) {
-            munch_magic = 10;
-        }
-    }
-	munch_base_color += 0x0021;
+// #pragma GCC diagnostic push
+// #pragma GCC diagnostic ignored "-Wstrict-overflow"
+//     if (munch_base_color > (munch_base_color + 0x0021)) {
+// #pragma GCC diagnostic pop
+//         munch_magic+=10;
+//         if (munch_magic > 100) {
+//             munch_magic = 10;
+//         }
+//     }
+    munch_base_color += 0x0021;
 }
 
 /* Borrow the framerate function from tile app. */

@@ -27,9 +27,12 @@
 
 #include "button_boot.h"
 #include "gamepad.h"
+#include "touch.h"
 #include "i2c.h"
 #include "lcd.h"
+#include "led.h"
 #include "math-util.h"
+#include "pam8019.h"
 #include "volume.h"
 #include "systick.h"
 #include "text.h"
@@ -38,37 +41,10 @@
 #include "munch_app.h"
 #include "tile_app.h"
 #include "audio_app.h"
+#include "fblocks_app.h"
 
 #define MY_CLOCK (rcc_hse_25mhz_3v3[RCC_CLOCK_3V3_168MHZ])
 #define BG_COLOR 0x0000         // black
-
-static const i2c_config i2c_cfg = {
-    .i_base_address    = I2C1,
-    .i_own_address     = 32,
-    .i_pins = {
-        {                   // SCL: pin PB6, AF4
-            .gp_port   = GPIOB,
-            .gp_pin    = GPIO6,
-            .gp_mode   = GPIO_MODE_AF,
-            .gp_pupd   = GPIO_PUPD_NONE,
-            .gp_af     = GPIO_AF4,
-            .gp_ospeed = GPIO_OSPEED_50MHZ,
-            .gp_otype  = GPIO_OTYPE_OD,
-            .gp_level  = 1,
-
-        },
-        {                   // SDA: pin PB7, AF4
-            .gp_port   = GPIOB,
-            .gp_pin    = GPIO7,
-            .gp_mode   = GPIO_MODE_AF,
-            .gp_pupd   = GPIO_PUPD_NONE,
-            .gp_af     = GPIO_AF4,
-            .gp_ospeed = GPIO_OSPEED_50MHZ,
-            .gp_otype  = GPIO_OTYPE_OD,
-            .gp_level  = 1,
-        },
-    },
-};
 
 uint32_t   fps;
 
@@ -76,6 +52,7 @@ enum app_ids {
     munch_app,
     tile_app,
     audio_app,
+    fblocks_app,
     end_app
 } active_app = munch_app;
 
@@ -106,6 +83,12 @@ struct app {
 		.render = audio_render,
                 .end = audio_app_end,
 	},
+	[fblocks_app] = {
+		.init = fblocks_init,
+		.animate = fblocks_animate,
+		.render = fblocks_render,
+                .end = NULL,
+	},
 };
 
 static void handle_systick(uint32_t millis)
@@ -123,20 +106,27 @@ static void setup(void)
     setup_systick(MY_CLOCK.ahb_frequency);
     register_systick_handler(handle_systick);
 
+    led_init();
+
     lcd_set_bg_color(BG_COLOR, false);
     lcd_init();
 
-    i2c_init(&i2c_cfg);
-    volume_init();
+    pam8019_init();
 
     text_init();
 
     gamepad_init();
+    touch_init();
 
-    /* Toggles with every frame */
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO1);
-    /* Is high when a slice is being rendered by the app. */
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO3);
+    /* Disabling debug outputs, as the audio repair board uses these pins.
+     * At present (11/2017), the pins PC5 and PC13 are available for debug.
+     */
+
+    /* Raise ~SHUTDOWN to enable audio output. */
+    pam8019_set_mode(PM_SHUTDOWN);
+    // gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO3);
+    // gpio_set(GPIOA, GPIO3);
+    // gpio_mode_setup(GPIOA, GPIO_MODE_INPUT, GPIO_PUPD_NONE, GPIO0);
 }
 
 static void calc_fps(void)
@@ -144,7 +134,7 @@ static void calc_fps(void)
     static uint32_t next_time;
     static uint32_t frame_count;
     frame_count++;
-    gpio_toggle(GPIOA, GPIO1);
+    /* gpio_toggle(GPIOA, GPIO1); */
     if (system_millis >= next_time) {
         fps = frame_count;
         frame_count = 0;

@@ -22,9 +22,12 @@
 #include <assert.h>
 
 #include "audio.h"
+#include "button_boot.h"
 #include "gamepad.h"
 #include "lcd.h"
+#include "led.h"
 #include "math-util.h"
+#include "pam8019.h"
 #include "systick.h"
 #include "text.h"
 #include "volume.h"
@@ -53,12 +56,33 @@
     #define ASD  ASD_12BIT
 #endif
 
-const gfx_rgb565 bg_color  = 0xF81F;
-const gfx_rgb565 vol_color = 0x07E0;
+typedef enum text_row {
+    TR_HEADER = 3,
+    TR_INSTR  = 5,
+    TR_MODE   = 7,
+    TR_OUTPUT = 8,
+    TR_VOL    = 10,
+    TR_VOLBAR = 11,
+    TR_RAWVOL = 12,
+    TR_RVBAR  = 13,
+} text_row;
 
-bool vol_is_visible;
+typedef enum text_col {
+    TC_LEFT   = 4,
+} text_col;
 
-char abuf[704] __attribute__((section(".sram2")));
+static const gfx_rgb565 bg_color  = 0xF81F;
+static const gfx_rgb565 vol_color = 0x07E0;
+
+static bool vol_is_visible;
+static pam8019_mode cur_mode;
+static uint8_t vol;
+static uint8_t prev_vol;
+static uint16_t raw_vol;
+
+// char abuf[704] __attribute__((section(".sram2")));
+#define FRAMES ((int)Fs / 250)
+DEFINE_AUDIO_BUFFER(abuf, FRAMES, ACC, ASD);
 
 #ifdef MONO
 
@@ -100,183 +124,62 @@ void audio_app_init(void)
 {
     audio_init(44100, ACC, ASD, abuf, sizeof abuf);
     audio_register_callback(audio_callback);
+    pam8019_set_mode(PM_NORMAL);
     audio_start();
+    prev_vol = volume_get();
 }
 
 void audio_app_end(void)
 {
     audio_stop();
-}
-
-static void increment_volume(void)
-{
-    uint8_t vol = volume_get();
-    if (vol < VOLUME_MAX) {
-        volume_set(vol + 1);
-    }
-}
-
-static void decrement_volume(void)
-{
-    uint8_t vol = volume_get();
-    if (vol > 0) {
-        volume_set(vol - 1);
-    }
+    pam8019_set_mode(PM_SHUTDOWN);
 }
 
 void audio_animate(void)
 {
+    // Volume control is visible if volume changed in last 800 msec.
+
+    const uint32_t VOL_FADE_TIME = 800;
+    static uint32_t vol_change_time = 0xF0000000; // large negative
+
+    cur_mode = pam8019_get_mode();
+    vol = volume_get();
+    raw_vol = volume_get_raw();
+
+    if (prev_vol != vol) {
+        prev_vol = vol;
+        vol_change_time = system_millis;
+    }
+    vol_is_visible = system_millis - vol_change_time < VOL_FADE_TIME;
+
     uint16_t buttons = gamepad_get();
     static uint16_t prev_buttons;
-
-    // Volume control is visible if button pressed in last 800 msec.
-    const uint32_t VOL_FADE_TIME = 800;
-    static uint32_t button_time;
-    if (buttons & (GAMEPAD_BVOLP | GAMEPAD_BVOLM)) {
-        button_time = system_millis;
-    }
-    vol_is_visible = system_millis - button_time < VOL_FADE_TIME;
-
-    if (buttons & GAMEPAD_BVOLP) {
-        static uint32_t press_time, repeat_time, repeat_ivl;
-        if (!(prev_buttons & GAMEPAD_BVOLP)) {
-            // Initial button press.
-            press_time = system_millis;
-            repeat_ivl = 800;
-            repeat_time = press_time + repeat_ivl;
-            increment_volume();
-        } else {
-            if (((int32_t)repeat_time - (int32_t)system_millis) < 0) {
-                // repeat button
-                if (repeat_ivl > 50)
-                    repeat_ivl /= 2;
-                repeat_time += repeat_ivl;
-                increment_volume();
-            }
-        }
-    }
-    if (buttons & GAMEPAD_BVOLM) {
-        static uint32_t press_time, repeat_time, repeat_ivl;
-        if (!(prev_buttons & GAMEPAD_BVOLM)) {
-            // Initial button press.
-            press_time = system_millis;
-            repeat_ivl = 800;
-            repeat_time = press_time + repeat_ivl;
-            decrement_volume();
-        } else {
-            if (((int32_t)repeat_time - (int32_t)system_millis) < 0) {
-                // repeat button
-                if (repeat_ivl > 50)
-                    repeat_ivl /= 2;
-                repeat_time += repeat_ivl;
-                decrement_volume();
-            }
-        }
+    
+    if ((buttons & ~prev_buttons) & GAMEPAD_BSELECT) {
+    
+        cur_mode = pam8019_get_mode() + 1;
+        if (cur_mode == PM_END)
+            cur_mode = PM_START;
+        pam8019_set_mode(cur_mode);
     }
     prev_buttons = buttons;
 }
 
 static void audio_draw_vol(gfx_pixslice *slice)
 {
-    const int text_y = 10;
-    const int bar_x = 48;
-    const int bar_y = 11 * 16;
-    const int bar_h = 16;
+    const int text_y = TR_VOL;
+    const int text_x = TC_LEFT;
+    const int bar_x = 8 * text_x;
+    const int bar_y = TR_VOLBAR * 16;
+    const int bar_h = 15;
 
     if (!vol_is_visible) {
         return;
     }
 
-    char *prefix = "volume: ";
 
-    int xoff = bar_x / 8;
-    for (const char *p = prefix; *p; p++) {
-        text_draw_char16(slice, *p, xoff, text_y, vol_color);
-        xoff++;
-    }
-
-    uint8_t vol = volume_get();
-
-    /* Draw "-NN dB". */
-    if (vol == 0) {
-        xoff = text_draw_str16(slice, "mute", xoff, text_y, vol_color);
-    } else {
-        int dB = VOLUME_MAX - (int)vol;
-        assert(0 <= dB && dB < 100);
-        if (dB < 10) {
-            xoff++;
-        }
-        /* sign or blank for "0 dB" */
-        if (dB != 0) {
-            text_draw_char16(slice, '-', xoff, text_y, vol_color);
-        }
-        xoff++;
-        if (dB >= 10) {
-            /* tens place */
-            char t = dB / 10 + '0';
-            text_draw_char16(slice, t, xoff, text_y, vol_color);
-            xoff++;
-        }
-        char o = '0' + dB % 10;
-        text_draw_char16(slice, o, xoff, text_y, vol_color);
-        xoff++;
-
-        /* "dB" */
-        xoff++;
-        xoff = text_draw_str16(slice, "dB", xoff, text_y, vol_color);
-    }
-
-    /* outline volume bar */
-    for (int y = bar_y; y < bar_y + bar_h; y++) {
-        gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
-        px[0] = px[VOLUME_MAX * 6] = vol_color;
-    }
-    gfx_rgb565 *px0 = gfx_pixel_address(slice, bar_x, bar_y);
-    gfx_rgb565 *px1 = gfx_pixel_address(slice, bar_x, bar_y + bar_h - 1);
-    if (px0) {
-        for (int x = 6 * vol + 1; x < 6 * VOLUME_MAX; x++) {
-            px0[x] = vol_color;
-        }
-    }
-    if (px1) {
-        for (int x = 6 * vol + 1; x < 6 * VOLUME_MAX; x++) {
-            px1[x] = vol_color;
-        }
-    }
-
-    /* fill volume bar */
-    for (int y = bar_y; y < bar_y + bar_h; y++) {
-        gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
-        if (px) {
-            for (int x = 0; x < vol * 6; x++) {
-                if (x % 6) {
-                    px[x] = vol_color;
-                }
-            }
-        }
-    }
-}
-
-static void audio_draw_raw_vol(gfx_pixslice *slice)
-{
-    const int text_y = 12;
-    const int bar_x = 32;
-    const int bar_y = 13 * 16;
-    const int bar_h = 16;
-
-    if (!vol_is_visible) {
-        return;
-    }
-
-    char *prefix = "raw vol: ";
-
-    int xoff = 4;
-    for (const char *p = prefix; *p; p++) {
-        text_draw_char16(slice, *p, xoff, text_y, vol_color);
-        xoff++;
-    }
-
-    uint16_t vol = volume_get_raw();
+    int xoff = text_x;
+    xoff = text_draw_str16(slice, "Volume: ", xoff, text_y, vol_color);
 
     /* hundreds place */
     char h = vol < 100 ? ' ' : '0' + vol / 100 % 10;
@@ -296,17 +199,88 @@ static void audio_draw_raw_vol(gfx_pixslice *slice)
     /* outline volume bar */
     for (int y = bar_y; y < bar_y + bar_h; y++) {
         gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
-        px[0] = px[VOLUME_RAW_MAX] = vol_color;
+        px[0] = px[VOLUME_MAX * 4] = vol_color;
     }
     gfx_rgb565 *px0 = gfx_pixel_address(slice, bar_x, bar_y);
     gfx_rgb565 *px1 = gfx_pixel_address(slice, bar_x, bar_y + bar_h - 1);
     if (px0) {
-        for (int x = 1; x < VOLUME_RAW_MAX; x++) {
+        for (int x = 4 * vol + 1; x < 4 * VOLUME_MAX; x++) {
             px0[x] = vol_color;
         }
     }
     if (px1) {
-        for (int x = 1; x < VOLUME_RAW_MAX; x++) {
+        for (int x = 4 * vol + 1; x < 4 * VOLUME_MAX; x++) {
+            px1[x] = vol_color;
+        }
+    }
+
+    /* fill volume bar */
+    for (int y = bar_y; y < bar_y + bar_h; y++) {
+        gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
+        if (px) {
+            for (int x = 0; x < 4 * vol; x++) {
+                if (x % 6) {
+                    px[x] = vol_color;
+                }
+            }
+        }
+    }
+}
+
+static void audio_draw_raw_vol(gfx_pixslice *slice)
+{
+    const int text_y = TR_RAWVOL;
+    const int text_x = TC_LEFT;
+    const int bar_x = 8 * text_x;
+    const int bar_y = TR_RVBAR * 16;
+    const int bar_h = 15;
+
+    if (!vol_is_visible) {
+        return;
+    }
+
+    char *prefix = "raw vol: ";
+
+    int xoff = text_x;
+    for (const char *p = prefix; *p; p++) {
+        text_draw_char16(slice, *p, xoff, text_y, vol_color);
+        xoff++;
+    }
+
+    /* thousands place */
+    char k = raw_vol < 1000 ? ' ' : '0' + raw_vol / 1000 % 10;
+    text_draw_char16(slice, k, xoff, text_y, vol_color);
+    xoff++;
+ 
+    /* hundreds place */
+    char h = raw_vol < 100 ? ' ' : '0' + raw_vol / 100 % 10;
+    text_draw_char16(slice, h, xoff, text_y, vol_color);
+    xoff++;
+ 
+    /* tens place */
+    char t = raw_vol < 10 ? ' ' : '0' + raw_vol / 10 % 10;
+    text_draw_char16(slice, t, xoff, text_y, vol_color);
+    xoff++;
+
+    /* ones place */
+    char o = '0' + raw_vol / 1 % 10;
+    text_draw_char16(slice, o, xoff, text_y, vol_color);
+    xoff++;
+
+    /* outline volume bar */
+    for (int y = bar_y; y < bar_y + bar_h; y++) {
+        gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
+        px[0] = px[VOLUME_RAW_MAX >> 4] = vol_color;
+    }
+    gfx_rgb565 *px0 = gfx_pixel_address(slice, bar_x, bar_y);
+    gfx_rgb565 *px1 = gfx_pixel_address(slice, bar_x, bar_y + bar_h - 1);
+    if (px0) {
+        for (int x = 1; x < VOLUME_RAW_MAX >> 4; x++) {
+            px0[x] = vol_color;
+        }
+    }
+    if (px1) {
+        for (int x = 1; x < VOLUME_RAW_MAX >> 4; x++) {
             px1[x] = vol_color;
         }
     }
@@ -315,15 +289,77 @@ static void audio_draw_raw_vol(gfx_pixslice *slice)
     for (int y = bar_y + 1; y < bar_y + bar_h - 1; y++) {
         gfx_rgb565 *px = gfx_pixel_address(slice, bar_x, y);
         if (px) {
-            for (int x = 0; x < vol; x++) {
+            for (int x = 0; x < raw_vol >> 4; x++) {
                 px[x] = vol_color;
             }
         }
     }
 }
 
-void audio_render_slice(gfx_pixslice *slice)
+static void audio_draw_header(gfx_pixslice *slice)
 {
+    int text_y = TR_HEADER;
+    int text_x = TC_LEFT;
+    text_draw_str16(slice, "Audio Saw Test", text_x, text_y, vol_color);
+}
+
+static void audio_draw_instructions(gfx_pixslice *slice)
+{
+    int text_y = TR_INSTR;
+    int text_x = TC_LEFT;
+    text_draw_str16(slice, "Press SELECT to change mode.",
+                    text_x, text_y, vol_color);
+}
+
+static void audio_draw_mode(gfx_pixslice *slice)
+{
+    const char *mode_str;
+    switch (cur_mode) {
+    case PM_SHUTDOWN:
+        mode_str = "Shutdown";
+        break;
+
+    case PM_MUTED:
+        mode_str = "Muted";
+        break;
+
+    case PM_NORMAL:
+        mode_str = "Normal";
+        break;
+
+    case PM_OVERRIDE_HP:
+        mode_str = "Force Headphones";
+        break;
+
+    case PM_OVERRIDE_SPKR:
+        mode_str = "Force Speaker";
+        break;
+
+    default:
+        assert(false);
+    }
+    int text_y = TR_MODE;
+    int text_x = TC_LEFT;
+    int xoff = text_draw_str16(slice, "Mode:    ", text_x, text_y, vol_color);
+    xoff = text_draw_str16(slice, mode_str, xoff, text_y, vol_color);
+
+}
+
+static void audio_draw_output(gfx_pixslice *slice)
+{
+    int text_y = TR_OUTPUT;
+    int text_x = TC_LEFT;
+    int xoff = text_draw_str16(slice, "Output:  ", text_x, text_y, vol_color);
+    const char *out = pam8019_output_is_headphones() ? "Headphones" : "Speaker";
+    xoff = text_draw_str16(slice, out, xoff, text_y, vol_color);
+}
+
+static void audio_render_slice(gfx_pixslice *slice)
+{
+    audio_draw_header(slice);
+    audio_draw_instructions(slice);
+    audio_draw_mode(slice);
+    audio_draw_output(slice);
     audio_draw_vol(slice);
     audio_draw_raw_vol(slice);
 }
