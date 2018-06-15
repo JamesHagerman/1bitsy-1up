@@ -89,7 +89,10 @@ void tracker_render(void) {
     h = MIN(LCD_MAX_SLICE_ROWS, LCD_HEIGHT - y);
     gfx_pixslice *slice = lcd_alloc_pixslice(0, y, LCD_WIDTH, h);
     
-    text_draw_str16(slice, "Tracker! ", 0, 0, vol_color); 
+    text_draw_str16(slice, "Wavetable Tracker!", 0, 0, vol_color); 
+    text_draw_str16(slice, "pos", 0, 1, vol_color);
+    text_draw_str16(slice, "| A  | B  | C  | D  |", 4, 2, vol_color);
+
 
     //audio_render_slice(slice);
     lcd_send_pixslice(slice);
